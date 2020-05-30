@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+
+suffix=
+identity_file=
+filesystem=
+remote_host=
+show_progress=
+lined_progress=
+
+usage() {
+  echo "Usage: backupsend [(-s|--suffix) <suffix>] [(-i|--identity-file) <identity_file>] <filesystem> <remote_host>"
+  echo
+  echo "Creates zfs snapshot with current date and optionally, suffix; Sends it to remote_host."
+  echo "Filesystem names should be equal."
+  echo "Warning: snapshots are applied with -F on target host"
+  echo
+  echo "Parameters:"
+  echo "    -s|--suffix <suffix>               add suffix to snapshot name"
+  echo "    -i|--identity-file <identity_file> use this identity file for ssh"
+  echo "    -p|--progress                      use pv to display progress"
+  echo "    -l|--lines                         print progress every line"
+  echo
+  echo "Examples:"
+  echo "  Create snapshot mypool/myfs@2020-01-01-weelkly and upload it to host.org using custom rsa key"
+  echo "    backupsend -s -weelkly -i /root/.ssh/id_backup.rsa mypool/myfs root@host.org"
+  echo
+}
+
+main() {
+  if [ -z "$filesystem" ] || [ -z "$remote_host" ]; then
+    usage
+    exit 1
+  fi
+
+  snapshot_name="${filesystem}@$(date +%F)${suffix}"
+
+  if ! zfs list -H -o name -t snapshot -r "${filesystem}" | grep -qF "$snapshot_name"; then
+    echo "Snapshot doesn't exist yet; creating"
+    zfs snapshot "$snapshot_name"
+    echo "Snapshot ${snapshot_name} is successfully created"
+  else
+    echo "Snapshot with this name already exists"
+  fi
+
+  total_snapshots="$(zfs list -H -o name -t snapshot -r "${filesystem}" | wc -l)"
+  older_snapshot=
+
+  if ((total_snapshots > 1)); then
+    older_snapshot="$(zfs list -H -o name -t snapshot -r "$filesystem" | grep -B1 -F "$snapshot_name" | head -n1)"
+    if [[ "$older_snapshot" == "$snapshot_name" ]]; then
+      older_snapshot=
+    fi
+  fi
+
+  shell_command=(zfs send -R)
+
+  if [ -z "$older_snapshot" ]; then
+    shell_command+=("$snapshot_name")
+  else
+    shell_command+=(-I "${older_snapshot}" "${snapshot_name}")
+  fi
+
+  if [ -n "$show_progress" ]; then
+    shell_command+=("|" pv)
+    if [ -n "$lined_progress" ]; then
+      shell_command+=(-tnb)
+    fi
+  fi
+
+  shell_command+=("|" ssh)
+
+  if [ -n "$identity_file" ]; then
+    shell_command+=("-i" "${identity_file}")
+  fi
+
+  shell_command+=("${remote_host}" zfs recv -F "${filesystem}")
+
+  echo "Sending snapshot"
+  eval "${shell_command[@]}"
+}
+
+combined_opts() {
+  while getopts "hpl" opt; do
+    case $opt in
+    h)
+      usage
+      exit
+      ;;
+    p) show_progress="1" ;;
+    l) lined_progress="1" ;;
+    *) ;;
+    esac
+  done
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+  -h | --help)
+    usage
+    exit
+    ;;
+  -p | --progress)
+    show_progress="1"
+    shift
+    ;;
+  -l | --lines)
+    lined_progress="1"
+    shift
+    ;;
+  -s | --suffix)
+    suffix="$2"
+    shift 2
+    ;;
+  -i | --identity-file)
+    identity_file="$2"
+    shift 2
+    ;;
+  -*)
+    combined_opts "$1"
+    shift
+    ;;
+  *)
+    break
+    ;;
+  esac
+done
+
+filesystem="$1"
+remote_host="$2"
+
+main
