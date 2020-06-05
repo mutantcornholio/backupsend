@@ -99,6 +99,8 @@ main() {
   else
     eval "${shell_command[@]}" | transform_log
   fi
+
+  write_log "All done"
 }
 
 combined_opts() {
