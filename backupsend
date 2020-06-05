@@ -6,6 +6,23 @@ filesystem=
 remote_host=
 show_progress=
 lined_progress=
+output_file=
+shell_command=()
+
+transform_log() {
+  if [ -n "$output_file" ]; then
+    perl -ne '($S,$M,$H,$DA,$MO,$Y) = localtime(); $Y += 1900;
+      $res=sprintf("[%d-%02d-%02dT%02d:%02d:%02d] %s", $Y, $MO, $DA, $H, $M, $S, $_);
+      open(my $logFh, ">>'"${output_file}"'"); print $logFh $res; print($res);'
+  else
+    perl -ne '($S,$M,$H,$DA,$MO,$Y) = localtime(); $Y += 1900;
+      $res=sprintf("[%d-%02d-%02dT%02d:%02d:%02d] %s", $Y, $MO, $DA, $H, $M, $S, $_); print($res);'
+  fi
+}
+
+write_log() {
+  echo "$@" | transform_log
+}
 
 usage() {
   echo "Usage: backupsend [(-s|--suffix) <suffix>] [(-i|--identity-file) <identity_file>] <filesystem> <remote_host>"
@@ -17,6 +34,7 @@ usage() {
   echo "Parameters:"
   echo "    -s|--suffix <suffix>               add suffix to snapshot name"
   echo "    -i|--identity-file <identity_file> use this identity file for ssh"
+  echo "    -o|--output <log_file>             write logs to file"
   echo "    -p|--progress                      use pv to display progress"
   echo "    -l|--lines                         print progress every line"
   echo
@@ -35,11 +53,11 @@ main() {
   snapshot_name="${filesystem}@$(date +%F)${suffix}"
 
   if ! zfs list -H -o name -t snapshot -r "${filesystem}" | grep -qF "$snapshot_name"; then
-    echo "Snapshot doesn't exist yet; creating"
+    write_log "Snapshot doesn't exist yet; creating"
     zfs snapshot "$snapshot_name"
-    echo "Snapshot ${snapshot_name} is successfully created"
+    write_log "Snapshot ${snapshot_name} is successfully created"
   else
-    echo "Snapshot with this name already exists"
+    write_log "Snapshot with this name already exists"
   fi
 
   total_snapshots="$(zfs list -H -o name -t snapshot -r "${filesystem}" | wc -l)"
@@ -52,7 +70,7 @@ main() {
     fi
   fi
 
-  shell_command=(zfs send -R)
+  shell_command+=(zfs send -R)
 
   if [ -z "$older_snapshot" ]; then
     shell_command+=("$snapshot_name")
@@ -63,7 +81,7 @@ main() {
   if [ -n "$show_progress" ]; then
     shell_command+=("|" pv)
     if [ -n "$lined_progress" ]; then
-      shell_command+=(-tnb)
+      shell_command+=(-nb)
     fi
   fi
 
@@ -75,8 +93,12 @@ main() {
 
   shell_command+=("${remote_host}" zfs recv -F "${filesystem}")
 
-  echo "Sending snapshot"
-  eval "${shell_command[@]}"
+  write_log "Sending snapshot"
+  if [[ -n "$show_progress" && -n "$lined_progress" ]]; then
+    eval "${shell_command[@]}" 2>&1 | xargs -I{} numfmt --to=iec-i --invalid=ignore {} | transform_log
+  else
+    eval "${shell_command[@]}" | transform_log
+  fi
 }
 
 combined_opts() {
@@ -113,6 +135,10 @@ while [ $# -gt 0 ]; do
     ;;
   -i | --identity-file)
     identity_file="$2"
+    shift 2
+    ;;
+  -o | --output)
+    output_file="$2"
     shift 2
     ;;
   -*)
