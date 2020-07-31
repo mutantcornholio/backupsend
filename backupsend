@@ -7,6 +7,7 @@ remote_host=
 show_progress=
 lined_progress=
 output_file=
+max_snapshots=
 ssh_command=()
 shell_command=()
 
@@ -26,7 +27,7 @@ write_log() {
 }
 
 usage() {
-  echo "Usage: backupsend [(-s|--suffix) <suffix>] [(-i|--identity-file) <identity_file>] <filesystem> <remote_host>"
+  echo "Usage: backupsend [(-s|--suffix) <suffix>] [(-m|--max-snapshots) <count>] [(-i|--identity-file) <identity_file>] <filesystem> <remote_host>"
   echo
   echo "Creates zfs snapshot with current date and optionally, suffix; Sends it to remote_host."
   echo "Filesystem names should be equal."
@@ -38,6 +39,7 @@ usage() {
   echo "    -o|--output <log_file>             write logs to file"
   echo "    -p|--progress                      use pv to display progress"
   echo "    -l|--lines                         print progress every line"
+  echo "    -m|--max-snapshots <count>         keep only X snapshots of current suffix"
   echo
   echo "Examples:"
   echo "  Create snapshot mypool/myfs@2020-01-01-weelkly and upload it to host.org using custom rsa key"
@@ -51,11 +53,7 @@ main() {
     exit 1
   fi
 
-  ssh_command+=(ssh)
-  if [ -n "$identity_file" ]; then
-    ssh_command+=("-i" "${identity_file}")
-  fi
-  ssh_command+=("${remote_host}")
+  construct_ssh_command
 
   snapshot_name="${filesystem}@$(date +%F)${suffix}"
 
@@ -67,7 +65,33 @@ main() {
     write_log "Snapshot ${snapshot_name} already exists"
   fi
 
+  clear_old_snapshots
+
   older_snapshot="$(get_previous_common_snapshot "$snapshot_name")"
+
+  construct_shell_command "$snapshot_name" "$older_snapshot"
+
+  write_log "Sending snapshot"
+  if [[ -n "$show_progress" && -n "$lined_progress" ]]; then
+    eval "${shell_command[@]}" 2>&1 | xargs -I{} numfmt --to=iec-i --invalid=ignore {} | transform_log
+  else
+    eval "${shell_command[@]}" | transform_log
+  fi
+
+  write_log "All done"
+}
+
+construct_ssh_command() {
+  ssh_command+=(ssh)
+  if [ -n "$identity_file" ]; then
+    ssh_command+=("-i" "${identity_file}")
+  fi
+  ssh_command+=("${remote_host}")
+}
+
+construct_shell_command() {
+  snapshot_name="$1"
+  older_snapshot="$2"
 
   shell_command+=(zfs send -R)
 
@@ -87,15 +111,6 @@ main() {
   fi
 
   shell_command+=("|" "${ssh_command[@]}" zfs recv -F "${filesystem}")
-
-  write_log "Sending snapshot"
-  if [[ -n "$show_progress" && -n "$lined_progress" ]]; then
-    eval "${shell_command[@]}" 2>&1 | xargs -I{} numfmt --to=iec-i --invalid=ignore {} | transform_log
-  else
-    eval "${shell_command[@]}" | transform_log
-  fi
-
-  write_log "All done"
 }
 
 get_previous_common_snapshot() {
@@ -116,6 +131,47 @@ get_previous_common_snapshot() {
       fi
     fi
   done <<<"$(echo "$local_snapshots" | perl -e 'print reverse <>')"
+}
+
+clear_old_snapshots() {
+  if [[ -z "$max_snapshots" ]]; then
+    return
+  fi
+
+  local_snapshots="$(zfs list -H -o name -t snapshot -r "${filesystem}")"
+  remote_snapshots="$("${ssh_command[@]}" zfs list -H -o name -t snapshot -r "${filesystem}")"
+
+  if [[ -n "$suffix" ]]; then
+    local_snapshots="$(echo "$local_snapshots" | grep -- "${suffix}\$")"
+    remote_snapshots="$(echo "$remote_snapshots" | grep -- "${suffix}\$")"
+  fi
+
+  local_count="$(echo "$local_snapshots" | wc -l)"
+  local_overhead=$((local_count - max_snapshots + 1))
+
+  if ((local_overhead > 0)); then
+    write_log "Removing $local_overhead older local snapshots"
+
+    while IFS= read -r local_snapshot; do
+      if [[ -n "$local_snapshot" ]]; then
+        write_log "Removing local $local_snapshot snapshot"
+        zfs destroy "$local_snapshot"
+      fi
+    done <<<"$(echo "$local_snapshots" | head -n "$local_overhead")"
+  fi
+
+  remote_count="$(echo "$remote_snapshots" | wc -l)"
+  remote_overhead=$((remote_count - max_snapshots + 1))
+
+  if ((remote_overhead > 0)); then
+    write_log "Removing $remote_overhead older remote snapshots"
+    while IFS= read -r remote_snapshot; do
+      if [[ -n "$remote_snapshot" ]]; then
+        write_log "Removing remote $remote_snapshot snapshot"
+        "${ssh_command[@]}" zfs destroy "$remote_snapshot"
+      fi
+    done <<<"$(echo "$remote_snapshots" | head -n "$remote_overhead")"
+  fi
 }
 
 combined_opts() {
@@ -145,6 +201,10 @@ while [ $# -gt 0 ]; do
   -l | --lines)
     lined_progress="1"
     shift
+    ;;
+  -m | --max-snapshots)
+    max_snapshots="$2"
+    shift 2
     ;;
   -s | --suffix)
     suffix="$2"
