@@ -7,6 +7,7 @@ remote_host=
 show_progress=
 lined_progress=
 output_file=
+ssh_command=()
 shell_command=()
 
 transform_log() {
@@ -50,6 +51,12 @@ main() {
     exit 1
   fi
 
+  ssh_command+=(ssh)
+  if [ -n "$identity_file" ]; then
+    ssh_command+=("-i" "${identity_file}")
+  fi
+  ssh_command+=("${remote_host}")
+
   snapshot_name="${filesystem}@$(date +%F)${suffix}"
 
   if ! zfs list -H -o name -t snapshot -r "${filesystem}" | grep -qF "$snapshot_name"; then
@@ -57,24 +64,18 @@ main() {
     zfs snapshot "$snapshot_name"
     write_log "Snapshot ${snapshot_name} is successfully created"
   else
-    write_log "Snapshot with this name already exists"
+    write_log "Snapshot ${snapshot_name} already exists"
   fi
 
-  total_snapshots="$(zfs list -H -o name -t snapshot -r "${filesystem}" | wc -l)"
-  older_snapshot=
-
-  if ((total_snapshots > 1)); then
-    older_snapshot="$(zfs list -H -o name -t snapshot -r "$filesystem" | grep -B1 -F "$snapshot_name" | head -n1)"
-    if [[ "$older_snapshot" == "$snapshot_name" ]]; then
-      older_snapshot=
-    fi
-  fi
+  older_snapshot="$(get_previous_common_snapshot "$snapshot_name")"
 
   shell_command+=(zfs send -R)
 
   if [ -z "$older_snapshot" ]; then
+    write_log "Older snapshots weren't found. Will send whole snapshot"
     shell_command+=("$snapshot_name")
   else
+    write_log "Older snapshot found. Will send diff between ${older_snapshot} and ${snapshot_name}"
     shell_command+=(-I "${older_snapshot}" "${snapshot_name}")
   fi
 
@@ -85,13 +86,7 @@ main() {
     fi
   fi
 
-  shell_command+=("|" ssh)
-
-  if [ -n "$identity_file" ]; then
-    shell_command+=("-i" "${identity_file}")
-  fi
-
-  shell_command+=("${remote_host}" zfs recv -F "${filesystem}")
+  shell_command+=("|" "${ssh_command[@]}" zfs recv -F "${filesystem}")
 
   write_log "Sending snapshot"
   if [[ -n "$show_progress" && -n "$lined_progress" ]]; then
@@ -101,6 +96,26 @@ main() {
   fi
 
   write_log "All done"
+}
+
+get_previous_common_snapshot() {
+  snapshot_name="$1"
+  local_snapshots="$(zfs list -H -o name -t snapshot -r "${filesystem}")"
+  remote_snapshots="$("${ssh_command[@]}" zfs list -H -o name -t snapshot -r "${filesystem}")"
+
+  total_snapshots="$(echo "$local_snapshots" | wc -l)"
+  if ((total_snapshots == 1)); then
+    return
+  fi
+
+  while IFS= read -r local_snapshot; do
+    if [[ -n "$local_snapshot" ]]; then
+      if echo "$remote_snapshots" | grep "$local_snapshot" >/dev/null; then
+        echo "$local_snapshot"
+        return
+      fi
+    fi
+  done <<<"$(echo "$local_snapshots" | perl -e 'print reverse <>')"
 }
 
 combined_opts() {
