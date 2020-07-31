@@ -65,6 +65,11 @@ main() {
     write_log "Snapshot ${snapshot_name} already exists"
   fi
 
+  if remote_snapshot_exists "$snapshot_name"; then
+    write_log "Snapshot ${snapshot_name} already exists on remote. Exiting."
+    exit 0
+  fi
+
   clear_old_snapshots
 
   older_snapshot="$(get_previous_common_snapshot "$snapshot_name")"
@@ -111,6 +116,16 @@ construct_shell_command() {
   fi
 
   shell_command+=("|" "${ssh_command[@]}" zfs recv -F "${filesystem}")
+}
+
+remote_snapshot_exists() {
+  snapshot_name="$1"
+  if "${ssh_command[@]}" zfs list -H -o name -t snapshot -r "${filesystem}" \
+  | grep -Fx -- "${snapshot_name}" > /dev/null; then
+    return 0
+  else
+    return 1
+  fi
 }
 
 get_previous_common_snapshot() {
