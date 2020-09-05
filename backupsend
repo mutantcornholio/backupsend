@@ -14,11 +14,11 @@ shell_command=()
 transform_log() {
   if [ -n "$output_file" ]; then
     perl -ne '($S,$M,$H,$DA,$MO,$Y) = localtime(); $Y += 1900;
-      $res=sprintf("[%d-%02d-%02dT%02d:%02d:%02d] %s", $Y, $MO, $DA, $H, $M, $S, $_);
+      $res=sprintf("[%d-%02d-%02dT%02d:%02d:%02d] %s", $Y, $MO+1, $DA, $H, $M, $S, $_);
       open(my $logFh, ">>'"${output_file}"'"); print $logFh $res; print($res);'
   else
     perl -ne '($S,$M,$H,$DA,$MO,$Y) = localtime(); $Y += 1900;
-      $res=sprintf("[%d-%02d-%02dT%02d:%02d:%02d] %s", $Y, $MO, $DA, $H, $M, $S, $_); print($res);'
+      $res=sprintf("[%d-%02d-%02dT%02d:%02d:%02d] %s", $Y, $MO+1, $DA, $H, $M, $S, $_); print($res);'
   fi
 }
 
