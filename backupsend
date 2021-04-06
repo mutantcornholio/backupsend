@@ -59,7 +59,9 @@ main() {
 
   if ! zfs list -H -o name -t snapshot -r "${filesystem}" | grep -qF "$snapshot_name"; then
     write_log "Snapshot doesn't exist yet; creating"
+    set -e
     zfs snapshot "$snapshot_name"
+    set +e
     write_log "Snapshot ${snapshot_name} is successfully created"
   else
     write_log "Snapshot ${snapshot_name} already exists"
@@ -78,9 +80,13 @@ main() {
 
   write_log "Sending snapshot"
   if [[ -n "$show_progress" && -n "$lined_progress" ]]; then
+    set -e
     eval "${shell_command[@]}" 2>&1 | xargs -I{} numfmt --to=iec-i --invalid=ignore {} | transform_log
+    set +e
   else
+    set -e
     eval "${shell_command[@]}" | transform_log
+    set +e
   fi
 
   write_log "All done"
@@ -130,8 +136,10 @@ remote_snapshot_exists() {
 
 get_previous_common_snapshot() {
   snapshot_name="$1"
+  set -e
   local_snapshots="$(zfs list -H -o name -t snapshot -r "${filesystem}")"
   remote_snapshots="$("${ssh_command[@]}" zfs list -H -o name -t snapshot -r "${filesystem}")"
+  set +e
 
   total_snapshots="$(echo "$local_snapshots" | wc -l)"
   if ((total_snapshots == 1)); then
@@ -153,8 +161,10 @@ clear_old_snapshots() {
     return
   fi
 
+  set -e
   local_snapshots="$(zfs list -H -o name -t snapshot -r "${filesystem}")"
   remote_snapshots="$("${ssh_command[@]}" zfs list -H -o name -t snapshot -r "${filesystem}")"
+  set +e
 
   if [[ -n "$suffix" ]]; then
     local_snapshots="$(echo "$local_snapshots" | grep -- "${suffix}\$")"
@@ -170,7 +180,9 @@ clear_old_snapshots() {
     while IFS= read -r local_snapshot; do
       if [[ -n "$local_snapshot" ]]; then
         write_log "Removing local $local_snapshot snapshot"
+        set -e
         zfs destroy "$local_snapshot"
+        set +e
       fi
     done <<<"$(echo "$local_snapshots" | head -n "$local_overhead")"
   fi
@@ -183,7 +195,9 @@ clear_old_snapshots() {
     while IFS= read -r remote_snapshot; do
       if [[ -n "$remote_snapshot" ]]; then
         write_log "Removing remote $remote_snapshot snapshot"
+        set -e
         "${ssh_command[@]}" zfs destroy "$remote_snapshot"
+        set +e
       fi
     done <<<"$(echo "$remote_snapshots" | head -n "$remote_overhead")"
   fi
